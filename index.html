@@ -785,7 +785,7 @@ function setArt(on){
   applySkyVisibility();
 }
 
-// ---- pole pointers: the Big Dipper → Polaris (north), the southern Pointers → the Cross (south) ----
+// ---- pole pointers: the Big Dipper → Polaris (north); the southern Pointers (α/β Cen) labelled (south) ----
 // J2000 RA/Dec (degrees). These ride precessPivot with the real stars, so the
 // Dipper keeps pointing at Polaris even as the precession slider carries Polaris
 // off the polar axis — that drift is the lesson.
@@ -810,9 +810,10 @@ function navLine(names, radius, mat, seg=20){
   const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p,3));
   const ln=new THREE.Line(g, mat); if(mat.isLineDashedMaterial) ln.computeLineDistances(); return ln;
 }
-function navLabel(name, text){
+function navLabel(name, text){ navLabelAt(NAV[name][0], NAV[name][1], text); }
+function navLabelAt(ra, dec, text){               // label anchored at an explicit point (offset clear of the stars)
   const d=document.createElement('div'); d.className='lbl nav'; d.textContent=text;
-  const o=new CSS2DObject(d); o.position.copy(navVec(name, STAR_R*0.9)); o.visible=false;
+  const o=new CSS2DObject(d); o.position.copy(radecToVec(ra, dec, STAR_R*0.9)); o.visible=false;
   pointerGroup.add(o); navLabels.push(o);
 }
 function buildPointers(){
@@ -828,16 +829,15 @@ function buildPointers(){
   // the Big Dipper itself — handle then bowl (closed)
   const solid=new THREE.LineBasicMaterial({color:GOLD, transparent:true, opacity:0.85});
   pointerGroup.add(navLine(['alkaid','mizar','alioth','megrez','dubhe','merak','phecda','megrez'], STAR_R*0.99, solid));
-  // the southern Pointers (α–β Centauri)
-  pointerGroup.add(navLine(['alphaCen','betaCen'], STAR_R*0.99, solid.clone()));
-  // dashed sight-lines: the two pointer pairs extended to what they find
+  // the Big Dipper's dashed sight-line, extended to Polaris
   const dash=()=>new THREE.LineDashedMaterial({color:GOLD, dashSize:STAR_R*0.05, gapSize:STAR_R*0.035,
     transparent:true, opacity:0.7});
   pointerGroup.add(navLine(['merak','dubhe','polaris'], STAR_R*0.985, dash()));   // → Polaris
-  pointerGroup.add(navLine(['alphaCen','gacrux'], STAR_R*0.985, dash()));         // → the Cross
   navLabel('megrez','Big Dipper');
   navLabel('polaris','Polaris');                  // honest at every epoch; only near the pole around now
-  navLabel('alphaCen','Pointers (α, β Cen)');
+  // the southern Pointers (α/β Centauri) — just the labelled stars, no lines.
+  // Label anchored a few degrees south of the pair so it sits clear of the stars.
+  navLabelAt(215.4, -66, 'Pointers (α, β Cen)');
   applySkyVisibility();
 }
 function setNav(on){
