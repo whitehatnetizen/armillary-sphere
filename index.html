@@ -1,0 +1,1392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual Armillary Sphere</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&family=Spectral:ital,wght@0,300;0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<!--
+  Virtual armillary sphere · Phase 2 — full manipulation.
+  Teaching-first model of the celestial sphere. Geometry and the two-frame
+  hierarchy follow 1-research/science/armillary-sphere/notes.md and PLAN.md.
+
+  Scene hierarchy (the mechanism IS the scene graph):
+    scene
+     └─ horizonGroup            observer's frame, FIXED  (horizon + meridian + cardinals)
+        └─ latitudePivot        tilt of the sky  (conventional 23.4°, or pole-elevation = latitude)
+           └─ skyFrame          the celestial sphere; local +Y = polar axis; spins for the daily turn
+              ├─ equator, ecliptic (+ sun), tropics, polar circles, colures
+              └─ polar axis + pole markers
+
+  Controls: orientation (conventional tilt vs observer latitude), date (sun along
+  the ecliptic), daily rotation (spin the sky), per-ring show/hide, hover to explain.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  :root{
+    /* parchment-instrument surfaces (UI chrome). The --c-* ring colours below
+       are read by the WebGL materials and must stay as they are. */
+    --bg-deep:#e4d7b6; --bg-card:#ece1c6; --bg-elevated:#f6efda;
+    --border:#c2b48d; --border-light:#a79261;
+    --text-primary:#2b2216; --text-secondary:#5b4d39; --text-muted:#8c7c60;
+    --accent-gold:#9a6a23;
+    --paper:#ece1c6; --paper-2:#e4d7b6; --paper-inset:#f6efda;
+    --rule:#c2b48d; --rule-dark:#a79261; --rule-soft:#d9cba4;
+    --ink:#2b2216; --accent:#9a6a23; --accent-deep:#7a4d16; --verd:#3f6f63;
+    --shadow:rgba(64,44,14,.24);
+    --noise:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    --font-display:'IM Fell English',Georgia,serif;
+    --font-sc:'IM Fell English SC',Georgia,serif;
+    --font-body:'Spectral',Georgia,serif;
+    --font-mono:'Spectral',Georgia,serif;
+    --c-horizon:#b0a18f; --c-meridian:#8a93b0; --c-equator:#d4a070;
+    --c-ecliptic:#c8736f; --c-tropic:#68b0a0; --c-polarcircle:#7a9cc0;
+    --c-colure:#9a7ac0; --c-axis:#e0b878; --c-sun:#ffd56b; --c-earth:#6a8ab0;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;overflow:hidden;background:var(--bg-deep);
+    font-family:var(--font-body);color:var(--text-primary)}
+  #app{position:fixed;inset:0}
+  canvas{display:block}
+
+  #labels{position:fixed;inset:0;pointer-events:none}
+  .lbl{font-family:var(--font-body);font-size:12px;letter-spacing:.02em;font-style:italic;
+    color:#efe6d0;background:rgba(11,10,8,.58);
+    padding:1px 7px;border-radius:3px;border:1px solid rgba(150,128,86,.5);
+    white-space:nowrap;transform:translate(-50%,-50%);
+    text-shadow:0 1px 3px rgba(0,0,0,.85)}
+  .lbl.cardinal{font-family:var(--font-display);font-size:15px;font-weight:400;font-style:normal;
+    color:#e7b75a;background:none;border:none;text-shadow:0 1px 5px #000}
+  .lbl.pole{color:#cdd6e8}
+  .lbl.sun{color:#ffe09a;border-color:#7a5e2a}
+  .lbl.zod{font-family:var(--font-body),sans-serif;font-size:11px;font-weight:500;
+    color:#e8c069;background:rgba(10,9,8,.5);border:1px solid rgba(120,90,45,.4);
+    padding:1px 6px;border-radius:4px;text-shadow:0 1px 4px #000}
+  .lbl.zod b{font-family:'Segoe UI Symbol','Segoe UI Historic',serif;
+    font-size:15px;font-weight:600;margin-right:2px}
+  .lbl.nav{color:#ffd98a;border-color:#7a5e2a;font-weight:600}
+
+  .panel{position:fixed;color:var(--ink);
+    background:
+      radial-gradient(120% 100% at 50% 0%, rgba(255,250,235,.5), rgba(255,250,235,0) 60%),
+      linear-gradient(180deg, #f0e6cc 0%, #e8dcbe 55%, #ddcfac 100%);
+    border:1px solid var(--rule-dark);border-radius:2px;
+    box-shadow:
+      0 0 0 4px var(--paper),            /* paper margin */
+      0 0 0 5px var(--rule-soft),        /* outer hairline → double rule */
+      0 18px 44px rgba(0,0,0,.55),
+      inset 0 1px 0 rgba(255,252,242,.6);
+    animation:settle .8s cubic-bezier(.2,.75,.25,1) both}
+  .panel::before{content:'';position:absolute;inset:0;border-radius:inherit;
+    background-image:var(--noise);background-size:140px 140px;
+    opacity:.05;mix-blend-mode:multiply;pointer-events:none}
+  .panel::after{content:'';position:absolute;inset:3px;border-radius:1px;
+    border:1px solid rgba(122,77,22,.22);pointer-events:none}   /* inner engraved rule */
+  @keyframes settle{from{opacity:0;filter:blur(2.5px)}to{opacity:1;filter:none}}
+  #title{animation-delay:.05s} #controls{animation-delay:.16s}
+  #help{animation-delay:.34s} #teach{animation-delay:.1s}
+  #vig{position:fixed;inset:0;pointer-events:none;
+    background:radial-gradient(130% 100% at 50% 38%, rgba(0,0,0,0) 52%, rgba(0,0,0,.55) 100%)}
+
+  #title{top:18px;left:50%;transform:translateX(-50%);text-align:center;padding:11px 30px 13px}
+  #title h1{font-family:var(--font-display);font-weight:400;font-size:1.7rem;
+    letter-spacing:.015em;line-height:1.05;color:var(--ink)}
+  #title .sub{font-family:var(--font-sc);font-size:.72rem;color:var(--accent-deep);
+    letter-spacing:.14em;margin-top:5px;position:relative;padding-top:8px}
+  #title .sub::before{content:'';position:absolute;top:0;left:50%;transform:translateX(-50%);
+    width:62px;height:7px;
+    background:radial-gradient(circle at 50% 0,var(--accent) 1.4px,transparent 1.7px) 50% 2px/9px 9px repeat-x;
+    opacity:.7}
+
+  /* ---- control panel ---- */
+  #controls{top:18px;right:18px;width:298px;padding:0;
+    max-height:calc(100vh - 36px);display:flex;flex-direction:column}
+  #controls .scroll{overflow-y:auto;padding:13px 17px 15px;
+    scrollbar-width:thin;scrollbar-color:var(--rule-dark) transparent}
+  #controls .scroll::-webkit-scrollbar{width:9px}
+  #controls .scroll::-webkit-scrollbar-thumb{background:var(--rule-dark);border-radius:5px;
+    border:2px solid var(--paper)}
+  #controls .scroll::-webkit-scrollbar-track{background:transparent}
+  .sec{border-top:1px solid var(--rule-soft)}
+  .sec:first-child{border-top:none}
+  .sec > h3{display:flex;align-items:center;gap:8px;margin:0;padding:11px 1px 9px;
+    cursor:pointer;user-select:none;font-family:var(--font-sc);font-weight:400;
+    font-size:.86rem;letter-spacing:.04em;color:var(--accent-deep);transition:color .15s}
+  .sec > h3:hover{color:var(--ink)}
+  .sec > h3 .ttl{margin-right:auto}
+  .sec > h3 .val{font-family:var(--font-body);font-style:italic;color:var(--ink);
+    font-size:.86rem;font-variant-numeric:tabular-nums;letter-spacing:0}
+  .sec > h3 .chev{flex:0 0 auto;width:8px;height:8px;opacity:.55;
+    border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;
+    transform:rotate(45deg);transition:transform .22s}
+  .sec.collapsed > h3 .chev{transform:rotate(-45deg)}
+  .sbody{padding-bottom:13px;animation:fadeBody .3s ease both}
+  .sec.collapsed .sbody{display:none}
+  @keyframes fadeBody{from{opacity:0}to{opacity:1}}
+
+  .seg{display:flex;gap:3px;background:var(--paper-2);border:1px solid var(--rule);
+    border-radius:3px;padding:3px;box-shadow:inset 0 1px 3px var(--shadow)}
+  .seg button{flex:1;font-family:var(--font-body);font-size:.84rem;color:var(--text-secondary);
+    background:none;border:1px solid transparent;border-radius:2px;padding:6px 4px;
+    cursor:pointer;transition:.15s}
+  .seg button.on{background:linear-gradient(180deg,#f9f2de,#efe4ca);color:var(--accent-deep);
+    font-weight:500;border-color:var(--rule-soft);
+    box-shadow:inset 0 1px 0 rgba(255,253,247,.7),0 1px 3px var(--shadow)}
+  .seg button:hover:not(.on){color:var(--ink)}
+
+  input[type=range]{width:100%;-webkit-appearance:none;appearance:none;height:3px;
+    background:var(--rule-dark);border-radius:1px;outline:none;margin:9px 0 5px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:18px;
+    border-radius:2px;cursor:pointer;border:1px solid var(--accent-deep);
+    background:linear-gradient(180deg,#e8c277,#b3852f 55%,#8e6320);
+    box-shadow:0 1px 2px var(--shadow),inset 0 1px 0 rgba(255,242,205,.7)}
+  input[type=range]::-moz-range-thumb{width:13px;height:18px;border-radius:2px;cursor:pointer;
+    border:1px solid var(--accent-deep);
+    background:linear-gradient(180deg,#e8c277,#b3852f 55%,#8e6320);
+    box-shadow:0 1px 2px var(--shadow),inset 0 1px 0 rgba(255,242,205,.7)}
+
+  .cityinput{width:100%;margin:8px 0 0;padding:7px 10px;font-family:var(--font-body);font-size:.86rem;
+    color:var(--ink);background:#f4ecd6;border:1px solid var(--rule);border-radius:3px;outline:none;
+    box-shadow:inset 0 1px 2px var(--shadow)}
+  .cityinput:focus{border-color:var(--accent);box-shadow:inset 0 1px 2px var(--shadow),0 0 0 2px rgba(154,106,35,.18)}
+  .cityinput::placeholder{color:var(--text-muted);font-style:italic}
+  .yearrow{display:flex;gap:6px;align-items:center;margin-top:7px}
+  .yearrow .cityinput{flex:1;margin:0}
+  .presets{display:flex;flex-wrap:wrap;gap:5px;margin-top:9px}
+  .presets button,.btn{font-family:var(--font-body);font-size:.8rem;
+    color:var(--text-secondary);background:linear-gradient(180deg,#efe5cb,#e4d7b6);
+    border:1px solid var(--rule);border-radius:3px;padding:5px 10px;cursor:pointer;transition:.15s;
+    box-shadow:inset 0 1px 0 rgba(255,252,243,.6)}
+  .presets button:hover,.btn:hover{color:var(--ink);border-color:var(--rule-dark);
+    background:linear-gradient(180deg,#f5edd5,#e9dcbd)}
+  .readout{font-family:var(--font-body);font-style:italic;font-size:.82rem;color:var(--text-secondary);
+    line-height:1.55;margin-top:7px;font-variant-numeric:tabular-nums}
+  .readout b{color:var(--ink);font-weight:600;font-style:normal}
+
+  .playrow{display:flex;align-items:center;gap:9px}
+  .playrow .btn{padding:6px 13px;color:var(--ink);min-width:64px;text-align:center}
+  .playrow input[type=range]{margin:0}
+
+  .ringgrid{display:flex;flex-direction:column;gap:1px}
+  .ringgrid .grphead{font-size:.78rem;color:var(--accent-deep);margin:9px 0 3px;
+    font-family:var(--font-sc);letter-spacing:.03em}
+  .ck{display:flex;align-items:center;gap:8px;padding:4px 5px;border-radius:3px;
+    cursor:pointer;font-size:.86rem;color:var(--ink);transition:.12s}
+  .ck:hover{background:var(--paper-inset)}
+  .ck input{accent-color:var(--accent);cursor:pointer}
+  .ck .sw{width:14px;height:3px;border-radius:2px;flex:0 0 auto;box-shadow:0 0 0 .5px rgba(0,0,0,.18)}
+  .miscrow{display:flex;gap:6px;margin-top:10px}
+  .footnote{margin-top:6px;padding-top:11px;border-top:1px solid var(--rule-soft);
+    font-family:var(--font-body);font-style:italic;font-size:.8rem;color:var(--text-muted);line-height:1.55}
+
+  #tip{position:fixed;pointer-events:none;z-index:30;max-width:240px;color:var(--ink);
+    background:linear-gradient(180deg,#f1e7cd,#e6d9ba);
+    border:1px solid var(--rule-dark);border-radius:3px;padding:9px 12px;opacity:0;transition:opacity .12s;
+    box-shadow:0 0 0 3px var(--paper),0 0 0 4px var(--rule-soft),0 10px 24px rgba(0,0,0,.45)}
+  #tip .nm{font-family:var(--font-display);font-size:1.12rem;font-weight:400;
+    color:var(--accent-deep);margin-bottom:2px}
+  #tip .de{font-family:var(--font-body);font-size:.82rem;color:var(--text-secondary);line-height:1.45}
+
+  #help{bottom:16px;left:50%;transform:translateX(-50%);padding:8px 18px;z-index:2;
+    font-family:var(--font-sc);font-size:.78rem;color:var(--text-secondary);letter-spacing:.04em}
+  #help b{color:var(--accent-deep);font-weight:400}
+
+  /* ---- teaching layer ---- */
+  .btn.wide{display:block;width:100%;text-align:center;padding:8px;margin-top:3px}
+  .btn.on{background:linear-gradient(180deg,#b3852f,#8e6320);color:#f6efda;
+    border-color:var(--accent-deep);box-shadow:inset 0 1px 0 rgba(255,240,200,.4)}
+  .subhead{font-size:.76rem;color:var(--accent-deep);font-family:var(--font-sc);
+    letter-spacing:.03em;margin:13px 0 6px}
+  .demos{display:flex;flex-direction:column;gap:5px;margin-bottom:10px}
+  .demos button{font-family:var(--font-body);font-size:.84rem;text-align:left;
+    color:var(--text-secondary);background:linear-gradient(180deg,#efe5cb,#e4d7b6);
+    border:1px solid var(--rule);border-radius:3px;padding:7px 10px;cursor:pointer;transition:.15s}
+  .demos button:hover{color:var(--ink);border-color:var(--rule-dark)}
+  .hlnote{display:flex;gap:14px;margin:8px 0 2px;font-size:.8rem;font-style:italic;color:var(--text-secondary)}
+  .hlnote i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+
+  #teach{bottom:54px;left:50%;transform:translateX(-50%);z-index:2;
+    width:min(520px,calc(100vw - 36px));padding:16px 22px}
+  #teach .ttl{font-family:var(--font-display);font-size:1.5rem;font-weight:400;
+    color:var(--accent-deep);margin-bottom:5px;line-height:1.08}
+  #teach .txt{font-family:var(--font-body);font-size:.95rem;color:var(--ink);line-height:1.55}
+  #teach .nav{display:flex;align-items:center;gap:10px;margin-top:14px}
+  #teach .nav .cnt{font-family:var(--font-sc);font-size:.8rem;color:var(--text-muted);margin-right:auto}
+  #teach .nav .btn[disabled]{opacity:.4;cursor:default}
+
+  @media(max-width:760px){
+    #controls{width:256px}
+    #title h1{font-size:1.3rem}
+    #help{display:none}
+    #teach{bottom:16px}
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="vig"></div>
+<div id="labels"></div>
+<div id="tip"><div class="nm"></div><div class="de"></div></div>
+
+<div id="title" class="panel">
+  <h1>Virtual Armillary Sphere</h1>
+  <div class="sub">the rings of the sky</div>
+</div>
+
+<div id="controls" class="panel">
+ <div class="scroll">
+  <div class="sec">
+    <h3><span class="ttl">View</span><span class="chev"></span></h3>
+    <div class="sbody">
+      <div class="seg" id="viewSeg">
+        <button data-view="outside" class="on">Outside</button>
+        <button data-view="inside">On Earth</button>
+      </div>
+      <div class="readout" id="skyRead"></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h3><span class="ttl">Location — latitude</span><span class="chev"></span></h3>
+    <div class="sbody">
+      <div id="latWrap">
+        <input list="capitalsList" id="cityInput" class="cityinput" placeholder="Search a capital city…" autocomplete="off">
+        <datalist id="capitalsList"></datalist>
+        <div class="presets">
+          <button data-lat="0">Equator</button>
+          <button data-lat="90">N pole</button>
+          <button data-lat="-90">S pole</button>
+        </div>
+      </div>
+      <div class="readout" id="orientRead"></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h3><span class="ttl">Date — sun on the ecliptic</span><span class="val" id="dateVal"></span><span class="chev"></span></h3>
+    <div class="sbody">
+      <input type="range" id="dateSlider" min="1" max="365" value="159" step="1">
+      <div class="presets">
+        <button data-doy="79">Mar equinox</button>
+        <button data-doy="172">Jun solstice</button>
+        <button data-doy="265">Sep equinox</button>
+        <button data-doy="355">Dec solstice</button>
+      </div>
+      <div class="readout" id="dateRead"></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h3><span class="ttl">Year — precession</span><span class="chev"></span></h3>
+    <div class="sbody">
+      <input type="range" id="precSlider" min="-24000" max="6000" value="2026" step="1">
+      <div class="yearrow">
+        <input type="number" id="precYearInput" min="-24000" max="6000" step="1" class="cityinput" style="margin:0">
+        <button class="btn" id="precNow">Now</button>
+      </div>
+      <div class="readout" id="precRead"></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h3><span class="ttl">Daily rotation</span><span class="chev"></span></h3>
+    <div class="sbody">
+      <button class="btn wide" id="playBtn">Play</button>
+      <div class="subhead">Speed</div>
+      <input type="range" id="speedSlider" min="0" max="1000" value="800" step="1">
+      <div class="readout" id="speedRead"></div>
+      <div class="readout" id="clockRead"></div>
+      <label class="ck" style="margin-top:6px"><input type="checkbox" id="advYearCb"><span class="sw" style="background:#c8736f"></span><span>Run through the year (1 turn = 1 day)</span></label>
+      <div class="readout">Spins the whole sky about the polar axis — one turn is a day.</div>
+    </div>
+  </div>
+
+  <div class="sec collapsed">
+    <h3><span class="ttl">Rings</span><span class="chev"></span></h3>
+    <div class="sbody">
+      <div class="ringgrid" id="ringGrid"></div>
+      <div class="miscrow">
+        <button class="btn" id="allOn">All on</button>
+        <button class="btn" id="allOff">All off</button>
+        <button class="btn" id="resetView">Reset view</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="sec collapsed">
+    <h3><span class="ttl">The real sky</span><span class="chev"></span></h3>
+    <div class="sbody">
+      <label class="ck" style="margin-bottom:6px"><input type="checkbox" id="constCb"><span class="sw" style="background:#6486ad"></span><span>Stars &amp; constellations</span></label>
+      <div class="seg" id="skyFilterSeg">
+        <button data-f="all" class="on">All sky</button>
+        <button data-f="few">Zodiac + Cross</button>
+      </div>
+      <label class="ck" style="margin-top:6px"><input type="checkbox" id="artCb"><span class="sw" style="background:#caa46a"></span><span>Constellation figures</span></label>
+      <label class="ck" style="margin-top:6px"><input type="checkbox" id="navCb"><span class="sw" style="background:#ffd06a"></span><span>Pole pointers (Big Dipper, Southern Cross)</span></label>
+      <div class="subhead">Zodiac placement <span style="letter-spacing:0;font-style:italic;color:var(--text-muted)">(needs "Zodiac signs" on)</span></div>
+      <div class="seg" id="zodSeg">
+        <button data-z="seasonal">Seasonal</button>
+        <button data-z="actual" class="on">Real stars</button>
+      </div>
+      <div class="readout" id="zodRead">Each sign on its real constellation. The gap from the seasonal mark is precession.</div>
+      <div class="readout" style="margin-top:9px;color:var(--text-muted);font-size:.74rem">Figures: Stellarium (Johan Meuris), Free Art License.</div>
+    </div>
+  </div>
+
+  <div class="sec collapsed" id="teachSec">
+    <h3><span class="ttl">Teaching</span><span class="chev"></span></h3>
+    <div class="sbody">
+      <button class="btn wide" id="hlBtn">Highlight the two frames</button>
+      <div class="hlnote" id="hlNote" style="display:none">
+        <span><i style="background:#e6a84e"></i>your frame</span>
+        <span><i style="background:#4fb6cf"></i>the sky’s frame</span>
+      </div>
+      <div class="subhead">Demonstrations</div>
+      <div class="demos" id="demoBtns"></div>
+      <button class="btn wide" id="tourBtn">Start guided tour</button>
+      <div class="subhead">Appearance</div>
+      <button class="btn wide" id="brassBtn">Brass finish</button>
+    </div>
+  </div>
+
+  <div class="footnote">The tilt between your frame and the sky's frame is the
+    mechanism. In "by latitude" mode the elevated pole sits exactly your latitude
+    above the horizon — which is why the north pole drops out of sight from
+    Brisbane.</div>
+ </div>
+</div>
+
+<div id="teach" class="panel" style="display:none">
+  <div class="ttl"></div>
+  <div class="txt"></div>
+  <div class="nav"></div>
+</div>
+
+<div id="help" class="panel">
+  <b>drag</b> to orbit &nbsp;·&nbsp; <b>scroll</b> to zoom &nbsp;·&nbsp; <b>hover a ring</b> to learn it
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---- constants -----------------------------------------------------------
+const R   = 5;                              // celestial sphere radius
+const OB  = THREE.MathUtils.degToRad(23.44);// obliquity of the ecliptic
+const AXIS_TILT = 23.44;                     // conventional display lean from vertical
+const TUBE = 0.028 * R;            // ring tube thickness
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const COL = {
+  horizon:cssVar('--c-horizon'), meridian:cssVar('--c-meridian'),
+  equator:cssVar('--c-equator'), ecliptic:cssVar('--c-ecliptic'),
+  tropic:cssVar('--c-tropic'),   polarcircle:cssVar('--c-polarcircle'),
+  colure:cssVar('--c-colure'),   axis:cssVar('--c-axis'),
+  sun:cssVar('--c-sun'),         earth:cssVar('--c-earth')
+};
+
+// ---- renderer / scene / camera ------------------------------------------
+const app = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+app.appendChild(renderer.domElement);
+
+const labelRenderer = new CSS2DRenderer({element:document.getElementById('labels')});
+labelRenderer.setSize(innerWidth, innerHeight);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#0a0908');
+
+// neutral environment so the brass finish picks up soft reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const FOV_OUT = 45, FOV_IN = 72;
+const camera = new THREE.PerspectiveCamera(FOV_OUT, innerWidth/innerHeight, 0.01, 200);
+const CAM0 = new THREE.Vector3(R*2.1, R*1.35, R*2.7);
+camera.position.copy(CAM0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.07;
+controls.minDistance = R*1.3;
+controls.maxDistance = R*8;
+controls.target.set(0, 0, 0);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const key = new THREE.DirectionalLight(0xfff1dd, 1.1); key.position.set(6,9,5); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88a0c0, 0.5); rim.position.set(-7,-3,-6); scene.add(rim);
+
+let decoStars;                                   // faint decorative field; hidden when the real sky is on
+(function stars(){
+  const n=1200, g=new THREE.BufferGeometry(), p=new Float32Array(n*3);
+  for(let i=0;i<n;i++){
+    const v=new THREE.Vector3().randomDirection().multiplyScalar(60+Math.random()*40);
+    p[i*3]=v.x; p[i*3+1]=v.y; p[i*3+2]=v.z;
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(p,3));
+  decoStars = new THREE.Points(g, new THREE.PointsMaterial({
+    color:0xb9c2d6, size:0.18, sizeAttenuation:true, transparent:true, opacity:0.7}));
+  scene.add(decoStars);
+})();
+
+// ---- celestial coordinate helpers ---------------------------------------
+const DEG = Math.PI/180;
+// RA/Dec (degrees) → skyFrame-local 3D. +Y = north celestial pole, RA 0 = +X
+// (the vernal equinox, where the Aries node sits). The −sin on z gives a
+// non-mirrored sky seen from inside (verified: Betelgeuse left-and-above Rigel).
+function radecToVec(raDeg, decDeg, radius){
+  const a=raDeg*DEG, d=decDeg*DEG;
+  return new THREE.Vector3(Math.cos(d)*Math.cos(a), Math.sin(d), -Math.cos(d)*Math.sin(a))
+           .multiplyScalar(radius);
+}
+// ecliptic longitude (deg) → equatorial RA/Dec (deg), via the 23.44° obliquity
+function eclipticToRaDec(lamDeg){
+  const l=lamDeg*DEG;
+  const dec=Math.asin(Math.sin(OB)*Math.sin(l));
+  const ra =Math.atan2(Math.cos(OB)*Math.sin(l), Math.cos(l));
+  return [ra/DEG, dec/DEG];
+}
+
+// ---- helpers + ring registry --------------------------------------------
+const RINGS = [];   // {mesh,label,name,desc,frame,key,color}
+function ringMesh(radius, color, tube=TUBE, seg=160){
+  return new THREE.Mesh(
+    new THREE.TorusGeometry(radius, tube, 18, seg),
+    new THREE.MeshStandardMaterial({color, metalness:0.65, roughness:0.35,
+      emissive:new THREE.Color(color).multiplyScalar(0.12)}));
+}
+function label(text, cls, x, y, z, parent){
+  const d = document.createElement('div');
+  d.className = 'lbl' + (cls?(' '+cls):'');
+  d.textContent = text;
+  const o = new CSS2DObject(d); o.position.set(x,y,z);
+  (parent||scene).add(o);
+  return o;
+}
+function register(o){           // o:{mesh,label,name,desc,frame,key,color}
+  if(o.mesh){
+    o.baseEmis = o.mesh.material.emissiveIntensity ?? 1;
+    o.origColor = o.mesh.material.color.clone();
+    o.origMetal = o.mesh.material.metalness;
+    o.origRough = o.mesh.material.roughness;
+    o.mesh.userData.reg = o;
+  }
+  RINGS.push(o); return o;
+}
+
+// =========================================================================
+//  OBSERVER'S FRAME — fixed to the ground
+// =========================================================================
+const horizonGroup = new THREE.Group();
+scene.add(horizonGroup);
+const Rh = R * 1.28;
+
+const horizon = ringMesh(Rh, COL.horizon, TUBE*1.1);
+horizon.rotation.x = Math.PI/2;
+horizonGroup.add(horizon);
+
+const disk = new THREE.Mesh(
+  new THREE.CircleGeometry(Rh, 96),
+  new THREE.MeshBasicMaterial({color:0x141a22, transparent:true, opacity:0.28, side:THREE.DoubleSide}));
+disk.rotation.x = -Math.PI/2;
+horizonGroup.add(disk);
+
+const meridian = ringMesh(Rh, COL.meridian, TUBE*1.1);
+meridian.rotation.y = Math.PI/2;
+horizonGroup.add(meridian);
+
+// cardinals + zenith (North = −Z, East = +X, South = +Z, West = −X)
+label('N','cardinal',0,0.18,-Rh, horizonGroup);
+label('E','cardinal', Rh,0.18,0, horizonGroup);
+label('S','cardinal',0,0.18, Rh, horizonGroup);
+label('W','cardinal',-Rh,0.18,0, horizonGroup);
+label('Zenith','cardinal',0,Rh*1.04,0, horizonGroup);
+const horizonLbl  = label('Horizon',null, Rh*0.7,0.05, Rh*0.7, horizonGroup);
+const meridianLbl = label('Meridian',null,0, Rh*0.72, Rh*0.72, horizonGroup);
+
+const earthMat = new THREE.MeshStandardMaterial({color:COL.earth, metalness:0.05, roughness:0.9,
+  emissive:0x0a1622, emissiveIntensity:0.5, envMapIntensity:0.3});
+const earth = new THREE.Mesh(new THREE.SphereGeometry(R*0.15, 48, 32), earthMat);
+horizonGroup.add(earth);
+// approximate continents — public-domain NASA Blue Marble daymap
+new THREE.TextureLoader().load('sky/earth.jpg', tex=>{
+  tex.colorSpace = THREE.SRGBColorSpace;
+  earthMat.map = tex; earthMat.color.set(0xffffff);
+  earthMat.emissive.set(0x0a1420); earthMat.emissiveIntensity = 0.22; earthMat.needsUpdate = true;
+});
+const earthLbl = label('Earth',null,0,-R*0.30,0, horizonGroup);
+const cityMarker = new THREE.Mesh(new THREE.SphereGeometry(R*0.014, 12, 10),
+  new THREE.MeshBasicMaterial({color:0xffcf4d}));
+earth.add(cityMarker);                             // "you are here" dot on the globe
+
+register({mesh:horizon, label:horizonLbl, name:'Horizon', frame:'your', color:COL.horizon,
+  desc:'Where the sky meets the ground. Everything above it is up; everything below is hidden by the Earth.'});
+register({mesh:meridian, label:meridianLbl, name:'Meridian', frame:'your', color:COL.meridian,
+  desc:'The north–south line passing through the zenith. The Sun crosses it at local noon.'});
+
+// =========================================================================
+//  LATITUDE PIVOT — the tilt of the sky
+// =========================================================================
+const latitudePivot = new THREE.Group();
+latitudePivot.rotation.x = THREE.MathUtils.degToRad(-AXIS_TILT);  // conventional default
+horizonGroup.add(latitudePivot);
+
+// =========================================================================
+//  SKY'S FRAME — celestial sphere; local +Y = polar axis; spins for the day
+// =========================================================================
+const skyFrame = new THREE.Group();
+latitudePivot.add(skyFrame);
+
+const equator = ringMesh(R, COL.equator, TUBE*1.15);
+equator.rotation.x = Math.PI/2;
+skyFrame.add(equator);
+const equatorLbl = label('Celestial equator',null, R*0.92, 0, R*0.39, skyFrame);
+register({mesh:equator, label:equatorLbl, name:'Celestial equator', frame:'sky', color:COL.equator,
+  desc:'The circle straight above Earth’s equator. The Sun sits on it at the two equinoxes.'});
+
+// ecliptic (sub-group so the sun bead rides on it)
+const eclipticGroup = new THREE.Group();
+eclipticGroup.rotation.x = Math.PI/2 + OB;
+skyFrame.add(eclipticGroup);
+const ecliptic = ringMesh(R, COL.ecliptic, TUBE*2.0);
+eclipticGroup.add(ecliptic);
+const eclipticLbl = label('Ecliptic',null, R*0.62, R*0.78, 0, eclipticGroup);
+register({mesh:ecliptic, label:eclipticLbl, name:'Ecliptic', frame:'sky', color:COL.ecliptic,
+  desc:'The Sun’s path through the year, tilted 23.44° to the equator. Engraved with the zodiac on real instruments.'});
+
+// sun bead
+const sun = new THREE.Mesh(
+  new THREE.SphereGeometry(R*0.07, 24, 18),
+  new THREE.MeshStandardMaterial({color:COL.sun, emissive:COL.sun, emissiveIntensity:1.4,
+    metalness:0, roughness:0.4}));
+eclipticGroup.add(sun);
+sun.add(new THREE.PointLight(0xffd877, 0.7, R*3));
+const sunLbl = label('Sun','sun', 0,0,0, eclipticGroup);
+register({mesh:sun, label:sunLbl, name:'Sun', frame:'sky', color:COL.sun,
+  desc:'The Sun, riding the ecliptic. Where it sits depends on the date; the daily spin carries it across the sky.'});
+
+// zodiac signs (glyph + name) — independent toggle, default off. Parented to
+// skyFrame; positioned either at the seasonal (equinox-based) longitudes or on
+// the real constellations, with precession baked in.
+const ZODIAC = [
+  ['♈','Aries','Ari'], ['♉','Taurus','Tau'], ['♊','Gemini','Gem'], ['♋','Cancer','Cnc'],
+  ['♌','Leo','Leo'],   ['♍','Virgo','Vir'],  ['♎','Libra','Lib'],  ['♏','Scorpio','Sco'],
+  ['♐','Sagittarius','Sgr'], ['♑','Capricorn','Cap'], ['♒','Aquarius','Aqr'], ['♓','Pisces','Psc']
+];
+const RZOD = R*1.12;
+const zodiacGroup = new THREE.Group();
+skyFrame.add(zodiacGroup);
+const zodiacLabels = [];                          // CSS2D visibility is per-label, not per-group
+ZODIAC.forEach(([g,name,code],i)=>{
+  const d = document.createElement('div'); d.className='lbl zod';
+  d.innerHTML = `<b>${g}</b> ${name}`;
+  const o = new CSS2DObject(d); o.visible = false;
+  zodiacGroup.add(o); zodiacLabels.push(o);
+});
+
+// ---- precession scaffolding (shared by the real stars + the 'actual' zodiac) ----
+const PREC_RATE = 360/25772;                      // degrees of precession per year
+let   PREC_SIGN = 1;                              // sense verified so the past slides the equinox toward Aries
+const eclipticPole = new THREE.Vector3(0, Math.cos(OB), Math.sin(OB)).normalize();
+const precQuat = new THREE.Quaternion();
+let precYear = 2000;                              // catalogue epoch (J2000)
+const precessPivot = new THREE.Group();           // carries the real stars; turns about the ecliptic pole
+skyFrame.add(precessPivot);
+const constPoints = {};                           // 3-letter code -> {ra,dec}, filled after fetch
+let zodiacPlacement = 'actual';
+
+function placeZodiac(){
+  ZODIAC.forEach(([g,name,code],i)=>{
+    let v;
+    if(zodiacPlacement==='actual' && constPoints[code]){
+      v = radecToVec(constPoints[code].ra, constPoints[code].dec, RZOD).applyQuaternion(precQuat);
+    }else{
+      const [ra,dec] = eclipticToRaDec(i*30);     // seasonal: fixed to the equinox
+      v = radecToVec(ra,dec,RZOD);
+    }
+    zodiacLabels[i].position.copy(v);
+  });
+}
+function eclLonOf(raDeg,decDeg){
+  const ra=raDeg*DEG, dec=decDeg*DEG;
+  const lon=Math.atan2(Math.sin(ra)*Math.cos(OB)+Math.tan(dec)*Math.sin(OB), Math.cos(ra));
+  return ((lon/DEG)%360+360)%360;
+}
+// IAU constellation boundaries along the ecliptic (J2000 ecliptic longitude where
+// the Sun enters each). A longitude belongs to the last boundary it passed.
+const ECL_BOUNDS = [[28.69,'Aries'],[53.46,'Taurus'],[90.14,'Gemini'],[118.26,'Cancer'],
+  [138.18,'Leo'],[173.96,'Virgo'],[217.81,'Libra'],[241.15,'Scorpius'],[247.66,'Ophiuchus'],
+  [266.62,'Sagittarius'],[299.72,'Capricornus'],[327.97,'Aquarius'],[351.65,'Pisces']];
+function constellationAtEclLon(elon){
+  let name='Pisces';                              // the wrap segment 351.65°→28.69°
+  for(const [b,n] of ECL_BOUNDS) if(elon>=b) name=n;
+  return name;
+}
+function equinoxConstellation(){                  // which constellation the spring equinox sits in
+  const e=radecToVec(0,0,1).applyQuaternion(precQuat.clone().invert());
+  const ra=Math.atan2(-e.z, e.x)/DEG, dec=Math.asin(THREE.MathUtils.clamp(e.y,-1,1))/DEG;
+  return constellationAtEclLon(eclLonOf(ra,dec));
+}
+function updatePrecReadout(){
+  const y=Math.round(precYear), yr = y<0 ? `${-y} BCE` : `${y} CE`;
+  const off=Math.abs(PREC_RATE*(y-2000));
+  const age=equinoxConstellation();
+  $('#precRead').innerHTML = `Year <b>${yr}</b> · equinox moved <b>${off.toFixed(0)}°</b> from today`
+    + (age ? `<br>Spring equinox in <b>${age}</b>` : '');
+}
+function setPrecession(year){
+  precYear=year;
+  precQuat.setFromAxisAngle(eclipticPole, PREC_RATE*(year-2000)*DEG*PREC_SIGN);
+  precessPivot.quaternion.copy(precQuat);
+  const sl=document.getElementById('precSlider'); if(sl && +sl.value!==year) sl.value=year;
+  const ni=document.getElementById('precYearInput'); if(ni && document.activeElement!==ni) ni.value=year;
+  placeZodiac();
+  updatePrecReadout();
+}
+placeZodiac();
+
+// ---- the real sky: ~5000 naked-eye stars + constellation stick-figures ----
+const STAR_R = R*9;
+const FEW_CODES = new Set([...ZODIAC.map(z=>z[2]), 'Cru']);  // 12 zodiac + Southern Cross
+let realSkyBuilt=false, skyAll=null, skyFew=null, cruxLabel=null, artGroup=null;
+let realSkyOn=false, skyFilter='all', artOn=false;
+
+function buildLineSegs(features, radius){
+  const lp=[];
+  features.forEach(ft=>ft.geometry.coordinates.forEach(seg=>{
+    for(let k=0;k<seg.length-1;k++){
+      const a=radecToVec(seg[k][0],seg[k][1],radius), b=radecToVec(seg[k+1][0],seg[k+1][1],radius);
+      lp.push(a.x,a.y,a.z,b.x,b.y,b.z);
+    }
+  }));
+  const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(lp,3));
+  return g;
+}
+// --- constellation-figure registration (Stellarium art, Free Art License) ---
+// Solve the affine map (image pixel) → 3D from three anchor stars, so each
+// figure drapes over its own stars; subdivide + project onto the sphere.
+function affineFromAnchors(anchors){
+  const P=anchors.map(a=>[a.x,a.y]);
+  const V=anchors.map(a=>radecToVec(a.ra,a.dec,1));
+  const dp1=[P[1][0]-P[0][0], P[1][1]-P[0][1]], dp2=[P[2][0]-P[0][0], P[2][1]-P[0][1]];
+  const det=dp1[0]*dp2[1]-dp1[1]*dp2[0];
+  const dV1=V[1].clone().sub(V[0]), dV2=V[2].clone().sub(V[0]);
+  const c1=dV1.clone().multiplyScalar(dp2[1]).addScaledVector(dV2,-dp1[1]).divideScalar(det);
+  const c2=dV1.clone().multiplyScalar(-dp2[0]).addScaledVector(dV2,dp1[0]).divideScalar(det);
+  const t=V[0].clone().addScaledVector(c1,-P[0][0]).addScaledVector(c2,-P[0][1]);
+  return {c1,c2,t};
+}
+function artPointAt(px,py,aff,radius){
+  return aff.c1.clone().multiplyScalar(px).addScaledVector(aff.c2,py).add(aff.t).normalize().multiplyScalar(radius);
+}
+function buildArtGeometry(w,h,aff){
+  const N=6, pos=[], uv=[], idx=[];
+  for(let j=0;j<=N;j++) for(let i=0;i<=N;i++){
+    const gu=i/N, gv=j/N, v=artPointAt(gu*w,(1-gv)*h,aff,STAR_R*1.02);
+    pos.push(v.x,v.y,v.z); uv.push(gu,gv);
+  }
+  for(let j=0;j<N;j++) for(let i=0;i<N;i++){
+    const a=j*(N+1)+i, b=a+1, c=a+(N+1), d=c+1; idx.push(a,c,b, b,c,d);
+  }
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+  g.setIndex(idx);
+  return g;
+}
+async function buildRealSky(){
+  if(realSkyBuilt) return; realSkyBuilt=true;
+  try{
+    const [stars,lines,consts] = await Promise.all([
+      fetch('sky/stars.6.json').then(r=>r.json()),
+      fetch('sky/constellations.lines.json').then(r=>r.json()),
+      fetch('sky/constellations.json').then(r=>r.json())
+    ]);
+    consts.features.forEach(ft=>{ const c=ft.geometry.coordinates; constPoints[ft.id]={ra:c[0],dec:c[1]}; });
+    skyAll = new THREE.Group(); skyFew = new THREE.Group();
+    precessPivot.add(skyAll, skyFew);
+
+    // --- all sky: every naked-eye star, binned by magnitude for size ---
+    const bins=[{max:2.0,size:3.0,p:[]},{max:3.5,size:2.0,p:[]},{max:5.0,size:1.3,p:[]},{max:9,size:0.8,p:[]}];
+    stars.features.forEach(ft=>{
+      const [ra,dec]=ft.geometry.coordinates, v=radecToVec(ra,dec,STAR_R);
+      (bins.find(b=>ft.properties.mag<=b.max)||bins[3]).p.push(v.x,v.y,v.z);
+    });
+    bins.forEach(b=>{ if(!b.p.length) return;
+      const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(b.p,3));
+      skyAll.add(new THREE.Points(g, new THREE.PointsMaterial({
+        color:0xd6def0, size:b.size, sizeAttenuation:false, transparent:true, opacity:0.95})));
+    });
+    skyAll.add(new THREE.LineSegments(buildLineSegs(lines.features, STAR_R*0.99),
+      new THREE.LineBasicMaterial({color:0x6486ad, transparent:true, opacity:0.4})));
+
+    // --- few: the 12 zodiac figures + the Southern Cross, with their stars ---
+    const fewFeatures = lines.features.filter(ft=>FEW_CODES.has(ft.id));
+    const fstars=new Map();
+    fewFeatures.forEach(ft=>ft.geometry.coordinates.forEach(seg=>seg.forEach(([ra,dec])=>{
+      const key=ra.toFixed(2)+','+dec.toFixed(2);
+      if(!fstars.has(key)){ const v=radecToVec(ra,dec,STAR_R); fstars.set(key,[v.x,v.y,v.z]); }
+    })));
+    const fsp=[]; fstars.forEach(p=>fsp.push(p[0],p[1],p[2]));
+    const fsg=new THREE.BufferGeometry(); fsg.setAttribute('position', new THREE.Float32BufferAttribute(fsp,3));
+    skyFew.add(new THREE.Points(fsg, new THREE.PointsMaterial({
+      color:0xe6eaf5, size:2.6, sizeAttenuation:false, transparent:true, opacity:1})));
+    skyFew.add(new THREE.LineSegments(buildLineSegs(fewFeatures, STAR_R*0.99),
+      new THREE.LineBasicMaterial({color:0x86a6cf, transparent:true, opacity:0.6})));
+    // label the one non-zodiac figure (the zodiac get their own labels)
+    const cd=constPoints['Cru'];
+    const cl=document.createElement('div'); cl.className='lbl'; cl.textContent='Southern Cross';
+    cruxLabel=new CSS2DObject(cl); cruxLabel.position.copy(radecToVec(cd.ra,cd.dec,STAR_R*0.9));
+    precessPivot.add(cruxLabel);
+
+    // --- constellation figures (13 = zodiac + Crux), faint, behind the stars ---
+    const artData = await fetch('sky/zodiac-art.json').then(r=>r.json());
+    const loader = new THREE.TextureLoader();
+    artGroup = new THREE.Group(); precessPivot.add(artGroup);
+    for(const e of artData){
+      const tex = await loader.loadAsync('sky/art/'+e.file);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const aff = affineFromAnchors(e.anchors);
+      artGroup.add(new THREE.Mesh(buildArtGeometry(e.size[0], e.size[1], aff),
+        new THREE.MeshBasicMaterial({map:tex, transparent:true, opacity:0.42,
+          depthWrite:false, side:THREE.DoubleSide})));
+    }
+
+    buildPointers();
+    placeZodiac(); updatePrecReadout(); applySkyVisibility();
+  }catch(e){ console.error('real sky load failed', e); }
+}
+function applySkyVisibility(){
+  if(skyAll) skyAll.visible = realSkyOn && skyFilter==='all';
+  if(skyFew) skyFew.visible = realSkyOn && skyFilter==='few';
+  if(cruxLabel) cruxLabel.visible = realSkyOn && skyFilter==='few';
+  if(artGroup) artGroup.visible = realSkyOn && artOn;
+  if(pointerGroup) pointerGroup.visible = navOn;          // independent of the all/few filter
+  navLabels.forEach(o=>o.visible = navOn);                // CSS2D visibility is per-label
+  decoStars.visible = !realSkyOn;
+}
+function setRealSky(on){ realSkyOn=on; applySkyVisibility(); }
+function setSkyFilter(f){ skyFilter=f; applySkyVisibility(); }
+function setArt(on){
+  artOn=on;
+  if(on && !realSkyOn){ realSkyOn=true; const cb=document.getElementById('constCb'); if(cb) cb.checked=true; }
+  applySkyVisibility();
+}
+
+// ---- pole pointers: the Big Dipper → Polaris (north), the southern Pointers → the Cross (south) ----
+// J2000 RA/Dec (degrees). These ride precessPivot with the real stars, so the
+// Dipper keeps pointing at Polaris even as the precession slider carries Polaris
+// off the polar axis — that drift is the lesson.
+const NAV = {
+  dubhe:[165.93,61.75], merak:[165.46,56.38], phecda:[178.46,53.69], megrez:[183.86,57.03],
+  alioth:[193.51,55.96], mizar:[200.98,54.93], alkaid:[206.89,49.31], polaris:[37.95,89.26],
+  alphaCen:[219.90,-60.83], betaCen:[210.96,-60.37], gacrux:[187.79,-57.11]
+};
+let pointerGroup=null, navOn=false, navBuilt=false;
+const navLabels=[];
+function navVec(name, radius){ const c=NAV[name]; return radecToVec(c[0],c[1],radius); }
+// great-circle polyline: subdivide each leg so long pointer lines hug the sphere
+function navLine(names, radius, mat, seg=20){
+  const p=[];
+  for(let i=0;i<names.length-1;i++){
+    const a=navVec(names[i],1).normalize(), b=navVec(names[i+1],1).normalize();
+    for(let s=(i?1:0); s<=seg; s++){
+      const v=a.clone().lerp(b, s/seg).normalize().multiplyScalar(radius);
+      p.push(v.x,v.y,v.z);
+    }
+  }
+  const g=new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(p,3));
+  const ln=new THREE.Line(g, mat); if(mat.isLineDashedMaterial) ln.computeLineDistances(); return ln;
+}
+function navLabel(name, text){
+  const d=document.createElement('div'); d.className='lbl nav'; d.textContent=text;
+  const o=new CSS2DObject(d); o.position.copy(navVec(name, STAR_R*0.9)); o.visible=false;
+  pointerGroup.add(o); navLabels.push(o);
+}
+function buildPointers(){
+  if(navBuilt) return; navBuilt=true;
+  pointerGroup = new THREE.Group(); precessPivot.add(pointerGroup);
+  const GOLD=0xffd06a;
+  // highlighted star dots (each must sit on a real catalogue star)
+  const hot=['dubhe','merak','phecda','megrez','alioth','mizar','alkaid','polaris','alphaCen','betaCen'];
+  const sp=[]; hot.forEach(n=>{const v=navVec(n, STAR_R); sp.push(v.x,v.y,v.z);});
+  const sg=new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.Float32BufferAttribute(sp,3));
+  pointerGroup.add(new THREE.Points(sg, new THREE.PointsMaterial({
+    color:GOLD, size:5.5, sizeAttenuation:false, transparent:true, opacity:1})));
+  // the Big Dipper itself — handle then bowl (closed)
+  const solid=new THREE.LineBasicMaterial({color:GOLD, transparent:true, opacity:0.85});
+  pointerGroup.add(navLine(['alkaid','mizar','alioth','megrez','dubhe','merak','phecda','megrez'], STAR_R*0.99, solid));
+  // the southern Pointers (α–β Centauri)
+  pointerGroup.add(navLine(['alphaCen','betaCen'], STAR_R*0.99, solid.clone()));
+  // dashed sight-lines: the two pointer pairs extended to what they find
+  const dash=()=>new THREE.LineDashedMaterial({color:GOLD, dashSize:STAR_R*0.05, gapSize:STAR_R*0.035,
+    transparent:true, opacity:0.7});
+  pointerGroup.add(navLine(['merak','dubhe','polaris'], STAR_R*0.985, dash()));   // → Polaris
+  pointerGroup.add(navLine(['alphaCen','gacrux'], STAR_R*0.985, dash()));         // → the Cross
+  navLabel('megrez','Big Dipper');
+  navLabel('polaris','Polaris');                  // honest at every epoch; only near the pole around now
+  navLabel('alphaCen','Pointers (α, β Cen)');
+  applySkyVisibility();
+}
+function setNav(on){
+  navOn=on;
+  if(on && !realSkyOn){ realSkyOn=true; const cb=document.getElementById('constCb'); if(cb) cb.checked=true; }
+  applySkyVisibility();
+}
+
+// small circles — tropics & polar circles
+function smallCircle(decRad, color, name, labelText, desc){
+  const r = R*Math.cos(decRad), off = R*Math.sin(decRad);
+  const c = ringMesh(r, color);
+  c.rotation.x = Math.PI/2; c.position.y = off;
+  skyFrame.add(c);
+  const l = label(labelText, null, -r*0.72, off, r*0.55, skyFrame);
+  register({mesh:c, label:l, name, frame:'sky', color, desc});
+  return c;
+}
+smallCircle( OB, COL.tropic, 'Tropic of Cancer', 'Tropic of Cancer',
+  'The Sun’s farthest north (declination +23.44°), reached at the June solstice.');
+smallCircle(-OB, COL.tropic, 'Tropic of Capricorn', 'Tropic of Capricorn',
+  'The Sun’s farthest south (−23.44°), reached at the December solstice.');
+const PC = Math.PI/2 - OB;
+smallCircle( PC, COL.polarcircle, 'Arctic circle', 'Arctic circle',
+  'At +66.56°. Poleward of here the Sun can stay up for a full day (midnight sun) or down for a full day.');
+smallCircle(-PC, COL.polarcircle, 'Antarctic circle', 'Antarctic circle',
+  'At −66.56°. The southern mirror of the Arctic circle — the southern midnight-sun limit.');
+
+// colures
+const equiColure = ringMesh(R, COL.colure);
+skyFrame.add(equiColure);
+const equiColLbl = label('Equinoctial colure',null, R*0.5, R*0.84, 0, skyFrame);
+register({mesh:equiColure, label:equiColLbl, name:'Equinoctial colure', frame:'sky', color:COL.colure,
+  desc:'A great circle through both poles and the two equinox points where the ecliptic crosses the equator.'});
+const solColure = ringMesh(R, COL.colure);
+solColure.rotation.y = Math.PI/2;
+skyFrame.add(solColure);
+const solColLbl = label('Solstitial colure',null, 0, R*0.5, R*0.84, skyFrame);
+register({mesh:solColure, label:solColLbl, name:'Solstitial colure', frame:'sky', color:COL.colure,
+  desc:'A great circle through both poles and the two solstice points where the ecliptic reaches the tropics.'});
+
+// polar axis + poles
+const axis = new THREE.Mesh(
+  new THREE.CylinderGeometry(TUBE*0.7, TUBE*0.7, R*2.36, 16),
+  new THREE.MeshStandardMaterial({color:COL.axis, metalness:0.7, roughness:0.3,
+    emissive:new THREE.Color(COL.axis).multiplyScalar(0.15)}));
+skyFrame.add(axis);
+const poleSpheres=[];                              // bound to the Polar-axis toggle
+const axisReg = register({mesh:axis, label:null, name:'Polar axis', frame:'sky', color:COL.axis,
+  extras:poleSpheres, desc:'The line the whole sky turns about, once a day. It points at the celestial pole.'});
+function pole(y, txt){
+  const s = new THREE.Mesh(
+    new THREE.SphereGeometry(R*0.05, 20, 16),
+    new THREE.MeshStandardMaterial({color:0xdfe6f2, metalness:0.3, roughness:0.5,
+      emissive:0x223044, emissiveIntensity:0.8}));
+  s.position.y = y; skyFrame.add(s); poleSpheres.push(s);
+  return label(txt,'pole',0,y + Math.sign(y)*R*0.13,0, skyFrame);
+}
+const npLbl = pole( R*1.18, 'N celestial pole');
+const spLbl = pole(-R*1.18, 'S celestial pole');
+
+// opaque ground for the first-person view — hides the sky below the horizon
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(R*60, 64),
+  new THREE.MeshStandardMaterial({color:0x0e0b08, roughness:1, metalness:0, side:THREE.DoubleSide}));
+ground.rotation.x = -Math.PI/2;
+ground.visible = false;
+scene.add(ground);
+
+// =========================================================================
+//  CONTROLS / STATE
+// =========================================================================
+const $ = s => document.querySelector(s);
+
+// --- orientation (conventional tilt vs latitude) ---
+let latitude = -27.5, cityLon = 153.03;
+// rotate the Earth so the chosen city sits at the top (zenith) while its pole
+// still points at the celestial pole — the "you stand here" orientation.
+function orientEarth(latDeg, lonDeg){
+  const phi=latDeg*DEG, L=lonDeg*DEG;
+  const cityLocal=new THREE.Vector3(Math.cos(L)*Math.cos(phi), Math.sin(phi), -Math.sin(L)*Math.cos(phi));
+  cityMarker.position.copy(cityLocal).multiplyScalar(R*0.15*1.03);   // sit the marker on the city
+  const up=new THREE.Vector3(0,1,0);
+  const ncp=new THREE.Vector3(0, Math.sin(phi), -Math.cos(phi));
+  const mk=(a,b)=>{
+    const u=a.clone().normalize();
+    const n=b.clone().addScaledVector(u, -b.dot(u));
+    if(n.lengthSq()<1e-8){ n.set(Math.abs(u.x)>0.9?0:1, Math.abs(u.x)>0.9?1:0, 0); n.addScaledVector(u,-n.dot(u)); }
+    n.normalize();
+    return new THREE.Matrix4().makeBasis(u, n, new THREE.Vector3().crossVectors(u,n));
+  };
+  const Ml=mk(cityLocal, new THREE.Vector3(0,1,0)), Mw=mk(up, ncp);
+  Ml.transpose(); Mw.multiply(Ml);
+  earth.quaternion.setFromRotationMatrix(Mw);
+}
+function applyOrientation(){
+  latitudePivot.rotation.x = THREE.MathUtils.degToRad(latitude - 90);
+  orientEarth(latitude, cityLon);
+  const hemi = latitude>=0 ? 'north' : 'south';
+  const up = latitude>=0 ? 'North' : 'South';
+  $('#orientRead').innerHTML =
+    `Latitude <b>${latitude.toFixed(1)}°</b> ${hemi}.<br>${up} celestial pole <b>${Math.abs(latitude).toFixed(1)}°</b> above the horizon.`;
+}
+function setLatitude(v, fromCity, lon){
+  latitude = v;
+  if(fromCity){ if(lon!==undefined) cityLon = lon; }
+  else { cityLon = 0; const ci=document.getElementById('cityInput'); if(ci) ci.value=''; }
+  applyOrientation();
+}
+document.querySelectorAll('#latWrap .presets button').forEach(b=>
+  b.addEventListener('click', ()=>setLatitude(+b.dataset.lat)));
+// searchable capital-city picker (national capitals + Brisbane)
+fetch('sky/capitals.json').then(r=>r.json()).then(list=>{
+  list.push({n:'Brisbane',c:'Australia',lat:-27.47,lon:153.03});
+  list.push({n:'Sydney',c:'Australia',lat:-33.87,lon:151.21});
+  list.sort((a,b)=>a.n.localeCompare(b.n));
+  const dl=$('#capitalsList'), cmap=new Map();
+  list.forEach(e=>{
+    const label=`${e.n}, ${e.c}`;
+    cmap.set(label.toLowerCase(), e);
+    const o=document.createElement('option'); o.value=label; dl.appendChild(o);
+  });
+  $('#cityInput').addEventListener('input', e=>{
+    const c=cmap.get(e.target.value.toLowerCase().trim());
+    if(c) setLatitude(c.lat, true, c.lon);
+  });
+}).catch(()=>{});
+
+// --- date → sun on the ecliptic ---
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const CUM=[0,31,59,90,120,151,181,212,243,273,304,334];
+const EVENTS=[[79,'≈ March equinox'],[172,'≈ June solstice'],[265,'≈ September equinox'],[355,'≈ December solstice']];
+function doyToDate(doy){ let m=11; while(m>0 && CUM[m]>=doy) m--; return `${doy-CUM[m]} ${MON[m]}`; }
+function setSun(doy){
+  // Sun's ecliptic longitude with the equation of centre (elliptical orbit) so
+  // solstices land at exactly ±23.44° and equinoxes at ~0°, accurate to ~0.3°.
+  const M = ((360*(doy-3)/365.25) % 360) * DEG;      // mean anomaly (perihelion ≈ Jan 3)
+  const C = (1.915*Math.sin(M) + 0.020*Math.sin(2*M)) * DEG;   // equation of centre
+  const lambda = M + C + 282.94*DEG;                 // ecliptic longitude from the vernal equinox
+  const a = -lambda;                                 // ecliptic-ring parameter
+  sun.position.set(R*Math.cos(a), R*Math.sin(a), 0);
+  sunLbl.position.copy(sun.position);
+  const dec = Math.asin(Math.sin(OB)*Math.sin(lambda)) * 180/Math.PI;
+  const ev = EVENTS.find(([d])=>Math.abs(((doy-d+182.5+365)%365)-182.5)<=2);
+  $('#dateVal').textContent = doyToDate(doy);
+  $('#dateRead').innerHTML =
+    `Sun declination <b>${dec>=0?'+':''}${dec.toFixed(1)}°</b> (${dec>=0?'north':'south'} of the equator).`
+    + (ev ? `<br><b>${ev[1]}</b>` : '');
+}
+function setDate(doy){ $('#dateSlider').value = doy; setSun(doy); }
+$('#dateSlider').addEventListener('input', e=>setSun(+e.target.value));
+document.querySelectorAll('button[data-doy]').forEach(b=>
+  b.addEventListener('click', ()=>setDate(+b.dataset.doy)));
+
+// --- daily rotation ---
+// The slider spans a wide range, so map it logarithmically: from real time at the
+// slow end — the sky's true sidereal turn, so leaving it on "Now" tracks the actual
+// constellations — up to one full rotation every second (a whole day per second).
+const SIDEREAL = 86164.0905;                      // sidereal day, seconds (the stars' true period)
+const SPD_REAL = 360/SIDEREAL;                    // sky's real rate, °/s — tracks the real constellations
+const SPD_MIN = SPD_REAL, SPD_MAX = 360;          // real time … one turn per second
+const sliderToSpeed = v => SPD_MIN * Math.pow(SPD_MAX/SPD_MIN, v/1000);
+let playing=false, speed=sliderToSpeed(800);      // degrees per second
+function fmtSecs(s){ return s>=7200 ? (s/3600).toFixed(1)+' h'
+  : s>=120 ? (s/60).toFixed(0)+' min'
+  : (s<10?(Math.round(s*10)/10):Math.round(s))+' s'; }
+function updateSpeedRead(){
+  const secPerTurn = 360/speed, sky = speed/SPD_REAL;   // sky-seconds elapsed per real second
+  const turn = secPerTurn>=1 ? `one turn per ${fmtSecs(secPerTurn)}` : `${(1/secPerTurn).toFixed(1)} turns per second`;
+  const rate = sky<1.5 ? 'real time — tracks the real sky' : `${fmtSecs(sky)} of sky per second`;
+  $('#speedRead').innerHTML = `<b>${turn}</b> · ${rate}`;
+}
+function setPlaying(b){ playing=b; $('#playBtn').textContent = b?'Pause':'Play'; }
+$('#playBtn').addEventListener('click', ()=>setPlaying(!playing));
+$('#speedSlider').addEventListener('input', e=>{ speed=sliderToSpeed(+e.target.value); updateSpeedRead(); });
+let advanceYear=false, yearAccum=0;
+$('#advYearCb').addEventListener('change', e=>{ advanceYear=e.target.checked; yearAccum=0; });
+
+// --- ring show/hide checkboxes ---
+const grid = $('#ringGrid');
+function group(title){ const h=document.createElement('div'); h.className='grphead'; h.textContent=title; grid.appendChild(h); }
+group('Your frame');
+RINGS.filter(r=>r.frame==='your').forEach(addCk);
+group('The sky’s frame');
+RINGS.filter(r=>r.frame==='sky').forEach(addCk);
+// zodiac signs — independent toggle (glyph + name labels on the ecliptic)
+let zodiacOn = false;
+function setZodiac(on){ zodiacOn=on; zodiacLabels.forEach(o=>o.visible=on); }
+(function addZodiacCk(){
+  const row=document.createElement('label'); row.className='ck';
+  const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=false;
+  const sw=document.createElement('span'); sw.className='sw'; sw.style.background='#e8c069';
+  const nm=document.createElement('span'); nm.textContent='Zodiac signs';
+  row.append(cb,sw,nm); grid.appendChild(row);
+  cb.addEventListener('change', ()=>setZodiac(cb.checked));
+})();
+function addCk(r){
+  const row=document.createElement('label'); row.className='ck';
+  const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=true;
+  const sw=document.createElement('span'); sw.className='sw'; sw.style.background=r.color;
+  const nm=document.createElement('span'); nm.textContent=r.name;
+  row.append(cb,sw,nm); grid.appendChild(row);
+  r._cb = cb;
+  cb.addEventListener('change', ()=>setVisible(r, cb.checked));
+}
+function setVisible(r, v){
+  if(r.mesh) r.mesh.visible=v;
+  if(r.label) r.label.visible=v;
+  if(r.extras) r.extras.forEach(m=>m.visible=v);
+  if(r.name==='Polar axis') updatePoleLabels();
+}
+$('#allOn').addEventListener('click', ()=>RINGS.forEach(r=>{r._cb.checked=true; setVisible(r,true);}));
+$('#allOff').addEventListener('click', ()=>RINGS.forEach(r=>{r._cb.checked=false; setVisible(r,false);}));
+$('#resetView').addEventListener('click', ()=>{
+  camera.position.copy(CAM0); controls.target.set(0,0,0); controls.update();
+});
+
+// --- hover to explain ---
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+const tip = $('#tip'); let hovered=null;
+const pickable = ()=>RINGS.filter(r=>r.mesh && r.mesh.visible).map(r=>r.mesh);
+renderer.domElement.addEventListener('pointermove', e=>{
+  ndc.x = (e.clientX/innerWidth)*2-1; ndc.y = -(e.clientY/innerHeight)*2+1;
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects(pickable(), false)[0];
+  const reg = hit ? hit.object.userData.reg : null;
+  if(reg!==hovered){
+    if(hovered) hovered.mesh.material.emissiveIntensity = hovered.baseEmis;
+    hovered = reg;
+    if(hovered) hovered.mesh.material.emissiveIntensity = hovered.baseEmis + 0.9;
+  }
+  if(hovered){
+    tip.querySelector('.nm').textContent = hovered.name;
+    tip.querySelector('.de').textContent = hovered.desc;
+    tip.style.opacity=1;
+    const tw=tip.offsetWidth, th=tip.offsetHeight;
+    tip.style.left = Math.min(e.clientX+14, innerWidth-tw-8)+'px';
+    tip.style.top  = Math.min(e.clientY+14, innerHeight-th-8)+'px';
+    renderer.domElement.style.cursor='help';
+  }else{ tip.style.opacity=0; renderer.domElement.style.cursor='grab'; }
+});
+
+// =========================================================================
+//  TEACHING LAYER
+// =========================================================================
+
+// --- ring appearance: teaching colours / frame highlight / brass finish ---
+let ringStyle = 'teaching';
+const FRAME_COL = { your:'#e6a84e', sky:'#4fb6cf' };
+const BRASS = { great:'#caa24a', small:'#b5893b', axis:'#e3c068' };
+function brassTone(r){
+  if(r.name==='Polar axis') return BRASS.axis;
+  if(/Tropic|circle/.test(r.name)) return BRASS.small;   // small circles a touch darker
+  return BRASS.great;
+}
+function applyRingStyle(style){
+  ringStyle = style;
+  $('#hlBtn').classList.toggle('on', style==='highlight');
+  $('#brassBtn').classList.toggle('on', style==='brass');
+  $('#hlNote').style.display = style==='highlight' ? 'flex' : 'none';
+  RINGS.forEach(r=>{
+    if(!r.mesh) return;
+    const m = r.mesh.material;
+    if(style==='highlight'){
+      if(r.name==='Sun') return;                 // Sun keeps its own colour
+      const c = new THREE.Color(FRAME_COL[r.frame]);
+      m.color.copy(c); m.emissive.copy(c).multiplyScalar(0.18);
+      m.metalness=r.origMetal; m.roughness=r.origRough;
+    }else if(style==='brass'){
+      if(r.name==='Sun') return;
+      const c = new THREE.Color(brassTone(r));
+      m.color.copy(c); m.emissive.copy(c).multiplyScalar(0.05);
+      m.metalness=0.95; m.roughness=0.28;
+    }else{                                        // teaching
+      m.color.copy(r.origColor); m.emissive.copy(r.origColor).multiplyScalar(0.12);
+      m.metalness=r.origMetal; m.roughness=r.origRough;
+    }
+  });
+}
+$('#hlBtn').addEventListener('click', ()=>applyRingStyle(ringStyle==='highlight'?'teaching':'highlight'));
+$('#brassBtn').addEventListener('click', ()=>applyRingStyle(ringStyle==='brass'?'teaching':'brass'));
+
+// --- one-click demonstrations ---
+const DEMOS = [
+  {label:'Equator — equal day & night', mode:'latitude', lat:0, doy:79, play:true,
+   text:'At the equator the polar axis lies along the horizon. The Sun rises straight up and every day is twelve hours. Press play and watch it climb vertically, then set on the opposite side.'},
+  {label:'Midnight sun (70° N)', mode:'latitude', lat:70, doy:172, play:true,
+   text:'Above the Arctic circle at the June solstice, the Sun’s daily circle never reaches the horizon. It swings low across the north — but it never sets.'},
+  {label:'North Pole — the Sun just circles', mode:'latitude', lat:90, doy:172, play:true,
+   text:'At the North Pole the celestial equator lies flat on the horizon, and the Sun circles parallel to the ground — about 23.4° up at the solstice. Six months of daylight.'},
+  {label:'Brisbane in midwinter', mode:'latitude', lat:-27.5, doy:172, play:true,
+   text:'June is winter in Brisbane. The Sun rides a low arc across the north for a short day, and the south celestial pole sits 27.5° above the southern horizon.'}
+];
+DEMOS.forEach(d=>{
+  const b = document.createElement('button');
+  b.textContent = d.label;
+  b.addEventListener('click', ()=>{
+    if(tourIdx>=0) exitTour();
+    setLatitude(d.lat); setDate(d.doy); setPlaying(d.play);
+    showTeach(d.label, d.text, 'demo');
+  });
+  $('#demoBtns').appendChild(b);
+});
+
+// --- guided tour: build the instrument up, ring by ring ---
+const TOUR = [
+  {add:[], ttl:'The armillary sphere', txt:'A model of the sky. You — the small Earth at the centre — look outward, and each ring is one circle of the heavens. Let us build it up one ring at a time.'},
+  {add:['Horizon'], ttl:'Your horizon', txt:'First, the horizon: where the sky meets the ground. North, east, south and west are marked on it. Everything above it is up; everything below is hidden by the Earth.'},
+  {add:['Meridian'], ttl:'Your meridian', txt:'The meridian runs north–south through the point straight overhead. The Sun crosses it at local noon. Horizon and meridian are your frame — fixed to where you stand.'},
+  {add:['Celestial equator'], ttl:'The celestial equator', txt:'Now the sky’s frame begins. The celestial equator sits straight above Earth’s equator. The Sun lies on it at the two equinoxes.'},
+  {add:['Ecliptic','Sun'], ttl:'The ecliptic', txt:'The ecliptic is the Sun’s path across a whole year, tilted 23.44° to the equator. The bright bead is the Sun, riding along it.'},
+  {add:['Tropic of Cancer','Tropic of Capricorn'], ttl:'The tropics', txt:'Where the ecliptic reaches farthest from the equator are the tropics — the Sun’s northern and southern limits, reached at the two solstices.'},
+  {add:['Arctic circle','Antarctic circle'], ttl:'The polar circles', txt:'Mirror those limits about the poles and you get the polar circles, at ±66.56°. They are the edges of the lands of the midnight sun.'},
+  {add:['Equinoctial colure','Solstitial colure'], ttl:'The colures', txt:'Two great circles through both poles divide the year: the equinoctial colure through the equinoxes, the solstitial colure through the solstices.'},
+  {add:['Polar axis'], ttl:'The polar axis', txt:'Finally the axis the whole sky turns about. Tilt it to your latitude and the model becomes your own sky. Now use the controls — set a latitude, move the Sun through the year, and play the day.'}
+];
+let tourIdx = -1;
+function tourVisible(i){ const s=new Set(); for(let k=0;k<=i;k++) TOUR[k].add.forEach(n=>s.add(n)); return s; }
+function applyTour(){
+  const vis = tourVisible(tourIdx);
+  RINGS.forEach(r=>{ const v = vis.has(r.name); setVisible(r, v); if(r._cb) r._cb.checked = v; });
+  showTeach(TOUR[tourIdx].ttl, TOUR[tourIdx].txt, 'tour');
+}
+function enterTour(){
+  tourIdx = 0;
+  setView('outside');
+  controls.autoRotate = true; controls.autoRotateSpeed = 0.6;
+  setPlaying(false);
+  applyTour();
+}
+function exitTour(){
+  tourIdx = -1;
+  controls.autoRotate = false;
+  RINGS.forEach(r=>{ setVisible(r, true); if(r._cb) r._cb.checked = true; });
+  hideTeach();
+}
+$('#tourBtn').addEventListener('click', enterTour);
+
+// --- teaching caption card (shared by demos + tour) ---
+function showTeach(ttl, txt, kind){
+  const t = $('#teach'); t.style.display = 'block';
+  t.querySelector('.ttl').textContent = ttl;
+  t.querySelector('.txt').textContent = txt;
+  const nav = t.querySelector('.nav');
+  if(kind==='tour'){
+    nav.innerHTML =
+      `<span class="cnt">${tourIdx+1} / ${TOUR.length}</span>`+
+      `<button class="btn" id="tPrev">Back</button>`+
+      `<button class="btn" id="tNext">${tourIdx===TOUR.length-1?'Finish':'Next'}</button>`+
+      `<button class="btn" id="tExit">Exit</button>`;
+    $('#tPrev').disabled = tourIdx===0;
+    $('#tPrev').onclick = ()=>{ if(tourIdx>0){ tourIdx--; applyTour(); } };
+    $('#tNext').onclick = ()=>{ if(tourIdx<TOUR.length-1){ tourIdx++; applyTour(); } else exitTour(); };
+    $('#tExit').onclick = exitTour;
+  }else{
+    nav.innerHTML = `<button class="btn" id="tClose">Close</button>`;
+    $('#tClose').onclick = hideTeach;
+  }
+}
+function hideTeach(){ $('#teach').style.display = 'none'; }
+
+// =========================================================================
+//  VIEW — outside (orbit) vs inside (first person, standing on the Earth)
+// =========================================================================
+let viewMode='outside', lookYaw=0, lookPitch=0.35;
+const EYE = new THREE.Vector3(0, 0.015, 0);     // eye just above the ground
+
+function updateLookDir(){
+  const cp=Math.cos(lookPitch), sp=Math.sin(lookPitch);
+  const dir=new THREE.Vector3(cp*Math.sin(lookYaw), sp, -cp*Math.cos(lookYaw));
+  camera.position.copy(EYE);
+  camera.lookAt(EYE.clone().add(dir));
+}
+function lookAtSun(){                            // face the Sun on entering, clamped above horizon
+  const p=new THREE.Vector3(); sun.getWorldPosition(p);
+  const len=p.length()||1;
+  lookYaw = Math.atan2(p.x, -p.z);
+  lookPitch = Math.max(0.12, Math.asin(THREE.MathUtils.clamp(p.y/len,-1,1)));
+}
+function updatePoleLabels(){    // pole labels follow the Polar-axis toggle, hidden in first person
+  const axisOn = axisReg && axisReg._cb ? axisReg._cb.checked : true;
+  const show = axisOn && viewMode!=='inside';
+  npLbl.visible = show; spLbl.visible = show;
+}
+function setView(v){
+  viewMode = v;
+  [...$('#viewSeg').children].forEach(c=>c.classList.toggle('on', c.dataset.view===v));
+  const inside = v==='inside';
+  orientEarth(latitude, cityLon);                 // keep the chosen city on top
+  controls.enabled = !inside;
+  controls.minDistance = R*1.3;
+  ground.visible = inside;
+  earth.visible = !inside; earthLbl.visible = !inside;
+  RINGS.forEach(r=>{                              // first-person hides ring labels (occlusion); meshes follow their toggle
+    if(r.label) r.label.visible = inside ? false : (r._cb ? r._cb.checked : true);
+    if(r.mesh)  r.mesh.visible  = (r._cb ? r._cb.checked : true);
+  });
+  poleSpheres.forEach(s=>{ s.visible = axisReg._cb ? axisReg._cb.checked : true; });
+  updatePoleLabels();
+  camera.fov = inside ? FOV_IN : FOV_OUT; camera.updateProjectionMatrix();
+  $('#help').innerHTML = inside
+    ? '<b>drag</b> to look around &nbsp;·&nbsp; <b>scroll</b> to zoom &nbsp;·&nbsp; press <b>Play</b> to watch the day'
+    : '<b>drag</b> to orbit &nbsp;·&nbsp; <b>scroll</b> to zoom &nbsp;·&nbsp; <b>hover a ring</b> to learn it';
+  if(inside){ controls.autoRotate=false; lookAtSun(); updateLookDir(); renderer.domElement.style.cursor='grab'; }
+  else { camera.position.copy(CAM0); controls.target.set(0,0,0); controls.update(); renderer.domElement.style.cursor=''; }
+}
+$('#viewSeg').addEventListener('click', e=>{ const b=e.target.closest('button'); if(b) setView(b.dataset.view); });
+
+// first-person drag-to-look (grab-the-sky feel) + scroll-to-zoom
+let dragging=false, px=0, py=0;
+renderer.domElement.addEventListener('pointerdown', e=>{
+  if(viewMode!=='inside') return;
+  dragging=true; px=e.clientX; py=e.clientY; renderer.domElement.style.cursor='grabbing';
+});
+addEventListener('pointerup', ()=>{ if(dragging){ dragging=false;
+  if(viewMode==='inside') renderer.domElement.style.cursor='grab'; } });
+addEventListener('pointermove', e=>{
+  if(!dragging || viewMode!=='inside') return;
+  const dx=e.clientX-px, dy=e.clientY-py; px=e.clientX; py=e.clientY;
+  const s = 0.0026*(camera.fov/FOV_IN);
+  lookYaw   -= dx*s;                              // drag right → the sky slides right
+  lookPitch += dy*s;                              // drag down  → look up
+  lookPitch = THREE.MathUtils.clamp(lookPitch, -1.45, 1.45);
+  updateLookDir();
+});
+renderer.domElement.addEventListener('wheel', e=>{
+  if(viewMode!=='inside') return;
+  e.preventDefault();
+  camera.fov = THREE.MathUtils.clamp(camera.fov + Math.sign(e.deltaY)*4, 30, 90);
+  camera.updateProjectionMatrix();
+}, {passive:false});
+
+// --- live sky read-out: where is the Sun right now? ---
+const COMPASS=['N','NE','E','SE','S','SW','W','NW'];
+const _sp=new THREE.Vector3();
+function updateSkyRead(){
+  sun.getWorldPosition(_sp);
+  const len=_sp.length()||1;
+  const alt=Math.asin(THREE.MathUtils.clamp(_sp.y/len,-1,1))*180/Math.PI;
+  const az=(Math.atan2(_sp.x,-_sp.z)*180/Math.PI+360)%360;
+  const dir=COMPASS[Math.round(az/45)%8];
+  $('#skyRead').innerHTML = alt>=0
+    ? `Sun <b>${alt.toFixed(0)}°</b> above the horizon · bearing <b>${dir}</b>`
+    : `Sun <b>${Math.abs(alt).toFixed(0)}°</b> below the horizon · <b>night</b>`;
+}
+
+// --- real sky: constellations toggle, zodiac placement, precession year ---
+$('#constCb').addEventListener('change', e=>setRealSky(e.target.checked));
+$('#artCb').addEventListener('change', e=>setArt(e.target.checked));
+$('#navCb').addEventListener('change', e=>setNav(e.target.checked));
+$('#skyFilterSeg').addEventListener('click', e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  [...$('#skyFilterSeg').children].forEach(c=>c.classList.toggle('on', c===b));
+  setSkyFilter(b.dataset.f);
+});
+$('#zodSeg').addEventListener('click', e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  zodiacPlacement=b.dataset.z;
+  [...$('#zodSeg').children].forEach(c=>c.classList.toggle('on', c===b));
+  placeZodiac();
+  $('#zodRead').innerHTML = zodiacPlacement==='actual'
+    ? 'Each sign on its real constellation. The gap from the seasonal mark is precession.'
+    : 'Aries fixed at the spring equinox — the seasonal signs.';
+});
+$('#precSlider').addEventListener('input', e=>setPrecession(+e.target.value));
+const NOW_YEAR = new Date().getFullYear();
+function dayOfYear(d){ return Math.floor((d - new Date(d.getFullYear(),0,0))/86400000); }
+function goToNow(){                                   // jump to the focused city's current date and time
+  setPrecession(NOW_YEAR);
+  // city local mean time = UTC shifted by longitude/15h (so the date follows the city, not the browser)
+  const cityMs = Date.now() + cityLon/15*3600*1000;
+  const cd = new Date(cityMs);
+  const doy = Math.floor((cityMs - Date.UTC(cd.getUTCFullYear(),0,0)) / 86400000);
+  setDate(Math.min(365, Math.max(1, doy)));
+  const targetH = cd.getUTCHours() + cd.getUTCMinutes()/60;   // city local wall-clock
+  const m = solarTimeStr().match(/(\d+):(\d+)/); const curH = m ? +m[1] + +m[2]/60 : 12;
+  skyFrame.rotation.y -= (targetH - curH) * 15 * DEG; // −15°/h: shift the day to the current hour
+  updateClock(); updateSkyRead();
+}
+$('#precNow').addEventListener('click', goToNow);
+$('#precYearInput').addEventListener('change', e=>{
+  let y = Math.round(+e.target.value); if(!isFinite(y)) y = NOW_YEAR;
+  y = Math.max(-24000, Math.min(6000, y));
+  setPrecession(y);
+});
+
+// every control section folds away — click its heading to collapse/expand
+document.querySelectorAll('#controls .sec > h3').forEach(h=>
+  h.addEventListener('click', ()=>h.parentElement.classList.toggle('collapsed')));
+
+// local solar time from the Sun's hour angle (updates as the day plays)
+const _paxis=new THREE.Vector3(), _swp=new THREE.Vector3(), _pq=new THREE.Quaternion();
+const TIME_SIGN=-1;   // so sunrise (Sun in the east) reads ~06:00, noon at upper culmination
+function solarTimeStr(){
+  latitudePivot.getWorldQuaternion(_pq);
+  _paxis.set(0,1,0).applyQuaternion(_pq);                       // north celestial pole, world dir
+  sun.getWorldPosition(_swp).normalize();
+  const sp=_swp.clone().addScaledVector(_paxis, -_swp.dot(_paxis));        // Sun in the equatorial plane
+  const m=new THREE.Vector3(0,1,0).addScaledVector(_paxis, -_paxis.y);     // meridian (zenith projected)
+  if(sp.lengthSq()<1e-5 || m.lengthSq()<1e-5) return '—';
+  sp.normalize(); m.normalize();
+  const cr=new THREE.Vector3().crossVectors(m, sp);
+  let H=Math.atan2(cr.dot(_paxis), m.dot(sp))*180/Math.PI*TIME_SIGN;       // hour angle, degrees
+  let h=(12 + H/15)%24; if(h<0) h+=24;
+  return String(Math.floor(h)).padStart(2,'0')+':'+String(Math.floor((h%1)*60)).padStart(2,'0');
+}
+function updateClock(){ $('#clockRead').innerHTML = 'Local solar time <b>'+solarTimeStr()+'</b>'; }
+
+// ---- init readouts -------------------------------------------------------
+applyOrientation();
+setSun(159);          // 8 June (today)
+applyRingStyle('teaching');
+setView('outside');
+updateSpeedRead();
+updateSkyRead();
+updateClock();
+buildRealSky();       // fetch + build the star layer (stays hidden until toggled)
+$('#precSlider').value = NOW_YEAR; setPrecession(NOW_YEAR);   // open at the present year
+
+// ---- resize + loop -------------------------------------------------------
+addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  labelRenderer.setSize(innerWidth, innerHeight);
+});
+let last = performance.now(), skyAcc = 0;
+(function loop(now){
+  requestAnimationFrame(loop);
+  const dt = Math.min((now-last)/1000, 0.1); last = now;
+  if(playing){
+    const dRot = THREE.MathUtils.degToRad(speed)*dt;
+    skyFrame.rotation.y -= dRot;                        // sky turns east→west: Sun rises in the east
+    if(advanceYear){                                    // one full turn advances the date by one day (any view)
+      yearAccum += dRot/(Math.PI*2);
+      if(yearAccum >= 1){
+        const days = Math.floor(yearAccum); yearAccum -= days;
+        let doy = +document.getElementById('dateSlider').value + days;
+        while(doy > 365) doy -= 365;
+        setDate(doy);
+      }
+    }
+  }
+  if(viewMode==='inside') updateLookDir();        // keep the eye pinned at the centre
+  else controls.update();                         // OrbitControls owns the camera outside
+  skyAcc += dt;
+  if(skyAcc > 0.12){ updateSkyRead(); updateClock(); skyAcc = 0; }  // ~8 Hz read-out
+  renderer.render(scene, camera);
+  labelRenderer.render(scene, camera);
+})(last);
+</script>
+</body>
+</html>
