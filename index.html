@@ -826,15 +826,11 @@ function buildPointers(){
   const sg=new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.Float32BufferAttribute(sp,3));
   pointerGroup.add(new THREE.Points(sg, new THREE.PointsMaterial({
     color:GOLD, size:5.5, sizeAttenuation:false, transparent:true, opacity:1})));
-  // the Big Dipper itself — handle then bowl (closed)
+  // the Big Dipper itself — handle then bowl (closed); no direction line
   const solid=new THREE.LineBasicMaterial({color:GOLD, transparent:true, opacity:0.85});
   pointerGroup.add(navLine(['alkaid','mizar','alioth','megrez','dubhe','merak','phecda','megrez'], STAR_R*0.99, solid));
-  // the Big Dipper's dashed sight-line, extended to Polaris
-  const dash=()=>new THREE.LineDashedMaterial({color:GOLD, dashSize:STAR_R*0.05, gapSize:STAR_R*0.035,
-    transparent:true, opacity:0.7});
-  pointerGroup.add(navLine(['merak','dubhe','polaris'], STAR_R*0.985, dash()));   // → Polaris
   navLabel('megrez','Big Dipper');
-  navLabel('polaris','Polaris');                  // honest at every epoch; only near the pole around now
+  navLabel('polaris','Polaris');                  // North Star, labelled (no pointer line)
   // the southern Pointers (α/β Centauri) — just the labelled stars, no lines.
   // Label anchored a few degrees south of the pair so it sits clear of the stars.
   navLabelAt(215.4, -66, 'Pointers (α, β Cen)');
